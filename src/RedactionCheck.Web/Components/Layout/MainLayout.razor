@@ -1,0 +1,27 @@
+﻿@inherits LayoutComponentBase
+
+<div class="app-shell">
+    <header class="app-header">
+        <div class="app-brand">
+            <span class="brand-mark" aria-hidden="true">▰</span>
+            <div>
+                <h1>PDF 涂黑检查工具</h1>
+                <p>识别“画框遮挡但文字仍可复制”的假涂黑，并执行真正的内容删除</p>
+            </div>
+        </div>
+    </header>
+
+    <main class="app-main">
+        @Body
+    </main>
+
+    <footer class="app-footer">
+        文件仅在当前会话内存中处理，不会写入服务器磁盘或对外发送。
+    </footer>
+</div>
+
+<div id="blazor-error-ui">
+    发生未处理的错误。
+    <a href="" class="reload">重新加载</a>
+    <a class="dismiss">🗙</a>
+</div>

@@ -16,3 +16,9 @@ node_modules/
 __pycache__/
 .venv/
 venv/
+
+# .NET build output
+bin/
+obj/
+*.user
+.vs/

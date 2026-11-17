@@ -1,0 +1,244 @@
+﻿@page "/"
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.JSInterop
+@using RedactionCheck.Core.Models
+@using RedactionCheck.Web.Services
+@inject AnalysisSession Session
+@inject PdfAnalysisService Service
+@inject IJSRuntime JS
+
+<PageTitle>PDF 涂黑检查工具</PageTitle>
+
+@if (Session.Report == null && Session.LastRedaction == null)
+{
+    <section class="upload-card">
+        <h2>1. 上传待检查的 PDF</h2>
+        <p class="muted">
+            工具会解析每页的图形、注释与文字，找出被视觉遮挡、但底层文字仍可被复制提取的位置，
+            并列出对方实际能恢复出来的内容。
+        </p>
+
+        <InputFile OnChange="OnUpload" accept="application/pdf" class="file-input" />
+
+        @if (Session.Busy)
+        {
+            <div class="status status-busy">正在解析 PDF，请稍候…</div>
+        }
+        @if (Session.Error != null)
+        {
+            <div class="status status-error">处理失败：@Session.Error</div>
+        }
+
+        <div class="hint-list">
+            <div class="hint-item"><strong>支持识别的遮挡方式</strong></div>
+            <div class="hint-item">■ 不透明填充黑框（f/f* 路径）</div>
+            <div class="hint-item">■ 粗描边“记号笔”线条（宽 S 描边）</div>
+            <div class="hint-item">■ 不透明图片 XObject 覆盖</div>
+            <div class="hint-item">■ 方块/高亮等遮盖注释</div>
+        </div>
+    </section>
+}
+else if (Session.LastRedaction == null)
+{
+    <section class="report-wrap">
+        <div class="report-header">
+            <div>
+                <h2>2. 检查结果</h2>
+                <p class="muted">文件：@Session.OriginalName　共 @Session.Report!.PageCount 页</p>
+            </div>
+            <button class="btn btn-ghost" @onclick="Reset">重新上传</button>
+        </div>
+
+        @if (!Session.Report!.HasAnyLeak)
+        {
+            <div class="banner banner-ok">
+                ✓ 未发现可恢复的遮挡文字。本文件没有“画框假涂黑”风险。
+            </div>
+        }
+        else
+        {
+            <div class="banner banner-warn">
+                ⚠ 发现 <strong>@Session.Report.TotalFindings</strong> 处假涂黑，
+                涉及 <strong>@Session.Report.TotalLeakedWords</strong> 个仍可复制的词。
+                对方可以直接选中并复制黑框下的文字。
+            </div>
+
+            @foreach (var page in Session.Report.Pages.Where(p => p.HasLeak))
+            {
+                <div class="page-card">
+                    <h3>第 @(page.PageNumber) 页 <span class="badge">@(page.Findings.Count) 处</span></h3>
+                    @foreach (var finding in page.Findings)
+                    {
+                        <div class="finding">
+                            <div class="finding-meta">
+                                <span class="kind kind-@finding.Cover.Kind">@KindLabel(finding.Cover.Kind)</span>
+                                <span class="muted small">@finding.Cover.Description</span>
+                            </div>
+                            <div class="leak-box">
+                                <div class="leak-label">可恢复内容（对方能复制出）：</div>
+                                <code class="leak-text">@finding.RecoverableText</code>
+                                <div class="muted small">
+                                    覆盖 @finding.Words.Count 个词 · 区域
+                                    L@(finding.Cover.Bounds.Left.ToString("0")) B@(finding.Cover.Bounds.Bottom.ToString("0"))
+                                    R@(finding.Cover.Bounds.Right.ToString("0")) T@(finding.Cover.Bounds.Top.ToString("0"))
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+
+            <div class="action-bar">
+                <button class="btn btn-danger" disabled="@Session.Busy" @onclick="RunRedaction">
+                    3. 执行真正的涂黑并复查
+                </button>
+                @if (Session.Busy)
+                {
+                    <span class="status status-busy">正在删除文字/图像数据并重新生成…</span>
+                }
+            </div>
+        }
+    </section>
+}
+else
+{
+    var r = Session.LastRedaction!;
+    <section class="report-wrap">
+        <div class="report-header">
+            <div>
+                <h2>4. 涂黑完成 · 复查报告</h2>
+                <p class="muted">输出文件：@r.OutputFileName</p>
+            </div>
+            <button class="btn btn-ghost" @onclick="Reset">处理新文件</button>
+        </div>
+
+        @if (r.Verification.Passed)
+        {
+            <div class="banner banner-ok">
+                ✓ 复查通过：重新扫描输出文件，已无法从涂黑区域提取任何文字（残留 @r.Verification.RemainingFindings 处）。
+            </div>
+        }
+        else
+        {
+            <div class="banner banner-error">
+                ✗ 复查未通过：仍有 @r.Verification.RemainingFindings 处可提取内容，请勿外发此文件。
+                @if (r.Verification.Error != null)
+                {
+                    <div class="small">@r.Verification.Error</div>
+                }
+            </div>
+        }
+
+        <div class="stat-grid">
+            <div class="stat"><div class="stat-num">@r.RedactedFindingCount</div><div class="stat-lbl">处理的假涂黑处</div></div>
+            <div class="stat"><div class="stat-num">@r.RemovedGlyphRuns</div><div class="stat-lbl">删除的文字片段</div></div>
+            <div class="stat"><div class="stat-num">@r.RemovedImages</div><div class="stat-lbl">删除的图像绘制</div></div>
+            <div class="stat"><div class="stat-num">@r.RemovedAnnotations</div><div class="stat-lbl">删除的遮盖注释</div></div>
+        </div>
+
+        <div class="probe-card">
+            <h3>逐词复查探针</h3>
+            <p class="muted small">原始文件中每个泄漏词，在新文件中再次提取验证：</p>
+            <table class="probe-table">
+                <thead><tr><th>页</th><th>原始泄漏文字</th><th>新文件是否仍可提取</th></tr></thead>
+                <tbody>
+                    @foreach (var p in r.Verification.Probes)
+                    {
+                        <tr>
+                            <td>@p.PageNumber</td>
+                            <td><code>@p.OriginalText</code></td>
+                            <td>
+                                @if (p.StillExtractable)
+                                {
+                                    <span class="tag tag-bad">仍可提取</span>
+                                }
+                                else
+                                {
+                                    <span class="tag tag-good">已不可提取</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (r.Warnings.Count > 0)
+        {
+            <div class="banner banner-warn">
+                @foreach (var w in r.Warnings) { <div>@w</div> }
+            </div>
+        }
+
+        <div class="action-bar">
+            <button class="btn btn-primary" @onclick="Download">下载涂黑后的 PDF</button>
+        </div>
+    </section>
+}
+
+@code {
+    private async Task OnUpload(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file == null) return;
+        Session.MarkBusy();
+        try
+        {
+            // Cap upload at 100 MB to protect the interactive session's memory.
+            await using var ms = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 100 * 1024 * 1024).CopyToAsync(ms);
+            var bytes = ms.ToArray();
+
+            Session.StoreOriginal(bytes, file.Name);
+            var report = Service.Scan(bytes, file.Name);
+            Session.StoreReport(report);
+        }
+        catch (Exception ex)
+        {
+            Session.Fail(ex.Message);
+        }
+    }
+
+    private Task RunRedaction()
+    {
+        if (Session.OriginalBytes == null || Session.Report == null) return Task.CompletedTask;
+        Session.MarkBusy();
+        try
+        {
+            var result = Service.Redact(Session.OriginalBytes, Session.Report);
+            Session.StoreRedaction(result);
+        }
+        catch (Exception ex)
+        {
+            Session.Fail(ex.Message);
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task Download()
+    {
+        if (Session.LastRedaction == null) return;
+        // Stream the bytes to the browser through JS interop — no server-side
+        // file and no cross-session download endpoint needed.
+        using var streamRef = new DotNetStreamReference(
+            new MemoryStream(Session.LastRedaction.PdfBytes));
+        await JS.InvokeVoidAsync("downloadPdf",
+            Session.LastRedaction.OutputFileName, streamRef);
+    }
+
+    private void Reset()
+    {
+        // Clear the scoped session in place; the page re-renders to the upload view
+        // without a full circuit reload.
+        Session.Clear();
+    }
+
+    private static string KindLabel(CoverKind kind) => kind switch
+    {
+        CoverKind.FilledArea => "填充黑框",
+        CoverKind.ThickStroke => "粗描边线",
+        CoverKind.OpaqueImage => "图片覆盖",
+        CoverKind.Annotation => "遮盖注释",
+        _ => kind.ToString()
+    };
+}
